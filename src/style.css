@@ -40,3 +40,9 @@ button {
   color: #ffffff;
   background-color: #000000;
 }
+
+@media (max-width: 600px) {
+  #app {
+    padding: 15px 8px 50px;
+  }
+}

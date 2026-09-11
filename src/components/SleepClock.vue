@@ -79,7 +79,7 @@
           />
         </g>
 
-        <!-- Horas exactas fuera del círculo con alineación dinámica y transición de opacidad al cambiar toggle -->
+        <!-- Horas exactas fuera del círculo con alineación dinámica y transición de opacidad -->
         <g v-if="hasCalculated" class="cycle-labels" :style="{ opacity: labelsOpacity }">
           <text
             v-for="label in cycleLabels"
@@ -100,14 +100,14 @@
         </g>
       </svg>
 
-      <!-- Centro del reloj: Hora centrada en Zen Dots sin bordes, soporte táctil/rueda y botón Calcular bajado y achicado -->
+      <!-- Centro del reloj: Hora centrada en Zen Dots sin bordes, soporte táctil/rueda anti-scroll y botón Calcular -->
       <div class="clock-center">
         <div class="time-selector">
-          <!-- Control de Horas (00 a 23) con soporte táctil / rueda / inercia -->
+          <!-- Control de Horas (00 a 23) con listener touch no pasivo para anular scroll de página -->
           <div
+            ref="hoursBoxRef"
             class="time-box"
             @touchstart="onTouchStart($event, 'hours')"
-            @touchmove="onTouchMove($event, 'hours')"
             @touchend="onTouchEnd($event, 'hours')"
             @touchcancel="onTouchEnd($event, 'hours')"
             @wheel.prevent="onWheel($event, 'hours')"
@@ -149,11 +149,11 @@
 
           <span class="time-colon">:</span>
 
-          <!-- Control de Minutos (SIEMPRE 2 dígitos 00 a 59) con soporte táctil / rueda / inercia -->
+          <!-- Control de Minutos (SIEMPRE 2 dígitos 00 a 59) con listener touch no pasivo -->
           <div
+            ref="minutesBoxRef"
             class="time-box"
             @touchstart="onTouchStart($event, 'minutes')"
-            @touchmove="onTouchMove($event, 'minutes')"
             @touchend="onTouchEnd($event, 'minutes')"
             @touchcancel="onTouchEnd($event, 'minutes')"
             @wheel.prevent="onWheel($event, 'minutes')"
@@ -214,12 +214,15 @@ export default {
   name: 'SleepClock',
   setup() {
     const store = useStore()
+    const hoursBoxRef = ref(null)
+    const minutesBoxRef = ref(null)
     const hoursInputRef = ref(null)
     const minutesInputRef = ref(null)
 
+    // Geometría del reloj con radio agrandado (r=185) para mayor protagonismo y proporciones óptimas
     const cx = 260
     const cy = 260
-    const r = 160
+    const r = 185
     const tickLength = 12
 
     const hoursNum = ref(23)
@@ -237,18 +240,28 @@ export default {
     const labelsOpacity = ref(1)
     let toggleAnimId = null
 
-    // Feedback háptico (vibración en móviles compatibles)
+    // Feedback háptico (vibración en móviles compatibles, ej: Android)
     const triggerHaptic = (ms = 10) => {
       if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
         try {
           navigator.vibrate(ms)
         } catch (e) {
-          // Silencioso si no está disponible
+          // Silencioso
         }
       }
     }
 
-    // Sincronizar hora inicial
+    // Handlers no pasivos para bloquear 100% el scroll de la página en iOS/Android al deslizar dígitos
+    const onTouchMoveHours = (e) => {
+      if (e.cancelable) e.preventDefault()
+      onTouchMove(e, 'hours')
+    }
+
+    const onTouchMoveMinutes = (e) => {
+      if (e.cancelable) e.preventDefault()
+      onTouchMove(e, 'minutes')
+    }
+
     onMounted(() => {
       const parsed = store.getters.parsedTargetTime
       hoursNum.value = parsed.hours
@@ -258,6 +271,27 @@ export default {
       displayedMode.value = store.getters.mode
       currentAngle.value = calcTargetBaseAngle()
       currentDotAngle.value = calcBaseBedtimeAngle()
+
+      // Registrar listeners touchmove con passive: false para anular el scroll nativo de pantalla
+      if (hoursBoxRef.value) {
+        hoursBoxRef.value.addEventListener('touchmove', onTouchMoveHours, { passive: false })
+      }
+      if (minutesBoxRef.value) {
+        minutesBoxRef.value.addEventListener('touchmove', onTouchMoveMinutes, { passive: false })
+      }
+    })
+
+    onUnmounted(() => {
+      if (hoursBoxRef.value) {
+        hoursBoxRef.value.removeEventListener('touchmove', onTouchMoveHours)
+      }
+      if (minutesBoxRef.value) {
+        minutesBoxRef.value.removeEventListener('touchmove', onTouchMoveMinutes)
+      }
+      if (animId) cancelAnimationFrame(animId)
+      if (toggleAnimId) cancelAnimationFrame(toggleAnimId)
+      stopInertia('hours')
+      stopInertia('minutes')
     })
 
     const mode = computed(() => store.getters.mode)
@@ -340,7 +374,6 @@ export default {
       const stepRetract = (now) => {
         const elapsed = now - retractStart
         const progress = Math.min(elapsed / retractDuration, 1)
-        // easeInQuad para recoger las líneas
         arcProgress.value = 1 - Math.pow(progress, 2)
         labelsOpacity.value = 1 - progress
 
@@ -351,7 +384,7 @@ export default {
           labelsOpacity.value = 0
           displayedMode.value = newMode
 
-          // Actualizar el ángulo objetivo para el nuevo modo
+          // Actualizar ángulo en el nuevo modo
           animateToAngle(calcTargetBaseAngle(), calcBaseBedtimeAngle())
 
           // Fase 2: Expandir en el nuevo sentido inverso (320ms)
@@ -362,7 +395,6 @@ export default {
           const stepExpand = (nowExpand) => {
             const elapsedExpand = nowExpand - expandStart
             const pExpand = Math.min(elapsedExpand / expandDuration, 1)
-            // easeOutCubic para despliegue suave
             arcProgress.value = 1 - Math.pow(1 - pExpand, 3)
             labelsOpacity.value = pExpand
 
@@ -382,7 +414,6 @@ export default {
       toggleAnimId = requestAnimationFrame(stepRetract)
     }
 
-    // Vigilar cambios de modo: si ya calculó, retrocede y expande; si no, actualiza inmediato
     watch(mode, (newMode, oldMode) => {
       if (newMode !== oldMode) {
         if (hasCalculated.value) {
@@ -441,7 +472,6 @@ export default {
       state.startTime = now
       state.accumulatedDelta += deltaY
 
-      // Deslizar hacia arriba aumenta, deslizar hacia abajo disminuye
       if (state.accumulatedDelta <= -STEP_THRESHOLD) {
         const steps = Math.floor(-state.accumulatedDelta / STEP_THRESHOLD)
         if (type === 'hours') stepHour(steps)
@@ -459,7 +489,6 @@ export default {
       const state = touchState[type]
       let vel = state.velocity
 
-      // Inercia con frenado suave
       if (Math.abs(vel) > 0.22) {
         let lastTime = performance.now()
         let accum = 0
@@ -504,13 +533,6 @@ export default {
       }
     }
 
-    onUnmounted(() => {
-      if (animId) cancelAnimationFrame(animId)
-      if (toggleAnimId) cancelAnimationFrame(toggleAnimId)
-      stopInertia('hours')
-      stopInertia('minutes')
-    })
-
     // Sincronización en tiempo real post-cálculo
     const syncTimeAndRecalculate = () => {
       const h = hoursNum.value
@@ -524,14 +546,13 @@ export default {
       }
     }
 
-    // Vigilar checkbox de 14 min para desplazar suavemente la línea en tiempo real
     watch(includeLatency, () => {
       if (hasCalculated.value) {
         animateToAngle(calcTargetBaseAngle(), calcBaseBedtimeAngle())
       }
     })
 
-    // Input handlers: mantiene el foco SIEMPRE sin destruir elementos al borrar
+    // Input handlers
     const onHoursInput = (e) => {
       let val = e.target.value.replace(/\D/g, '')
       if (val.length > 2) val = val.slice(-2)
@@ -644,7 +665,7 @@ export default {
       return result
     })
 
-    // Coordenadas del punto de inicio base (desplaza suavemente)
+    // Coordenadas del punto de inicio base
     const startTimeCoord = computed(() => {
       const rad = currentDotAngle.value * (Math.PI / 180)
       return {
@@ -753,7 +774,7 @@ export default {
       if (!cycles.value || arcProgress.value <= 0.1) return []
       const isClockwise = displayedMode.value === 'bed'
       const startDeg = currentAngle.value
-      const labelRadius = r + 24
+      const labelRadius = r + 25
 
       return cycles.value.map(c => {
         const sweepAngle = (c.number * 45) * arcProgress.value
@@ -803,6 +824,8 @@ export default {
       cy,
       r,
       ticks,
+      hoursBoxRef,
+      minutesBoxRef,
       hoursInputRef,
       minutesInputRef,
       rawHours,
@@ -819,7 +842,6 @@ export default {
       focusHours,
       focusMinutes,
       onTouchStart,
-      onTouchMove,
       onTouchEnd,
       onWheel,
       hasCalculated,
@@ -842,14 +864,15 @@ export default {
   margin: 10px 0 25px;
   position: relative;
   user-select: none;
+  width: 100%;
 }
 
 .clock-stage {
   position: relative;
   width: 520px;
   height: 520px;
-  max-width: 90vw;
-  max-height: 90vw;
+  max-width: 95vw;
+  max-height: 95vw;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -882,6 +905,7 @@ export default {
   align-items: center;
   justify-content: center;
   gap: 2px;
+  touch-action: none;
 }
 
 .time-box {
@@ -889,8 +913,9 @@ export default {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  touch-action: none; /* Permite deslizar los números sin desplazar la pantalla */
+  touch-action: none !important; /* Anula scroll nativo */
   cursor: grab;
+  user-select: none;
 }
 
 .time-box:active {
@@ -902,7 +927,7 @@ export default {
   color: #777777;
   border: none;
   font-size: 11px;
-  padding: 3px 14px;
+  padding: 3px 16px;
   cursor: pointer;
   line-height: 1;
   transition: color 0.15s ease, transform 0.1s ease;
@@ -928,6 +953,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
+  touch-action: none !important;
 }
 
 /* Input sin bordes, centrado y con fuente Zen Dots con ancho completo sin recortes */
@@ -1062,75 +1088,79 @@ export default {
   transition: opacity 0.18s ease;
 }
 
-/* =========================================
-   MEDIA QUERIES PARA DISPOSITIVOS MÓVILES
-   ========================================= */
+/* ==========================================================
+   MEDIA QUERIES PARA DISPOSITIVOS MÓVILES (PROPORCIONES PROTAGÓNICAS)
+   ========================================================== */
 @media (max-width: 600px) {
+  .sleep-clock-container {
+    margin: 5px 0 20px;
+  }
+
   .clock-stage {
-    width: 360px;
-    height: 360px;
-    max-width: 92vw;
-    max-height: 92vw;
+    width: 100%;
+    max-width: 98vw;
+    height: auto;
+    aspect-ratio: 1 / 1;
   }
 
   .digit-viewport {
-    width: 82px;
-    height: 50px;
+    width: 86px;
+    height: 52px;
     overflow-x: visible;
   }
 
   .time-digit-input {
-    font-size: 32px;
-    line-height: 50px;
+    font-size: 34px;
+    line-height: 52px;
     letter-spacing: 0;
   }
 
   .time-colon {
-    font-size: 28px;
+    font-size: 30px;
     margin: 0 4px;
-    margin-top: -4px;
+    margin-top: -5px;
   }
 
   .arrow-btn {
-    padding: 2px 10px;
-    font-size: 9px;
+    padding: 2px 14px;
+    font-size: 10px;
   }
 
   .btn-calculate {
-    width: 80px;
+    width: 84px;
     height: 28px;
     font-size: 10px;
-    top: 68%;
+    top: 67%;
   }
 
   .cycle-label-text {
-    font-size: 11.5px;
+    font-size: 12px;
   }
 }
 
 @media (max-width: 380px) {
   .digit-viewport {
-    width: 72px;
-    height: 44px;
+    width: 76px;
+    height: 46px;
     overflow-x: visible;
   }
 
   .time-digit-input {
-    font-size: 27px;
-    line-height: 44px;
+    font-size: 29px;
+    line-height: 46px;
     letter-spacing: 0;
   }
 
   .time-colon {
-    font-size: 24px;
+    font-size: 26px;
     margin: 0 2px;
   }
 
   .btn-calculate {
-    width: 74px;
+    width: 78px;
     height: 26px;
     font-size: 9.5px;
-    top: 69%;
+    top: 67.5%;
   }
 }
 </style>
